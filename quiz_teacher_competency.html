@@ -189,6 +189,41 @@ body{font-family:var(--sans);background:var(--paper);color:var(--ink);font-size:
 .empty-sub{font-size:13px;color:var(--ink3);line-height:1.55}
 .footer{text-align:center;padding:0 0 24px;font-size:12px;color:var(--ink3)}
 
+/* TIMER */
+.timer-bar{
+  background:var(--ink);
+  padding:8px 24px;
+  display:flex;align-items:center;justify-content:center;gap:8px;
+  position:sticky;top:56px;z-index:99;
+  border-bottom:1px solid rgba(255,255,255,.08);
+}
+.timer-display{
+  font-family:var(--serif);font-size:22px;font-weight:700;
+  color:#fff;letter-spacing:.04em;
+  font-variant-numeric:tabular-nums;
+}
+.timer-label{font-size:12px;color:rgba(255,255,255,.45)}
+.timer-bar.warn .timer-display{color:var(--gold2);animation:pulse .9s ease infinite}
+.timer-bar.danger .timer-display{color:#FF6B6B;animation:pulse .5s ease infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
+.timer-ring{
+  width:28px;height:28px;flex-shrink:0;
+}
+.timer-ring circle{
+  fill:none;stroke-width:3;stroke-linecap:round;
+  transition:stroke-dashoffset .9s linear,stroke .4s;
+}
+.timer-ring .bg{stroke:rgba(255,255,255,.12)}
+.timer-ring .fg{
+  stroke:var(--teal2);
+  stroke-dasharray:75.4;
+  stroke-dashoffset:0;
+  transform-origin:center;
+  transform:rotate(-90deg);
+}
+.timer-bar.warn .timer-ring .fg{stroke:var(--gold2)}
+.timer-bar.danger .timer-ring .fg{stroke:#FF6B6B}
+
 @media(max-width:480px){
   .content{padding:20px 12px 40px}
   .hero{padding:22px 18px}
@@ -292,6 +327,16 @@ body{font-family:var(--sans);background:var(--paper);color:var(--ink);font-size:
 
   <!-- QUIZ -->
   <div id="screen-quiz" class="screen">
+    <div id="timer-bar" class="timer-bar" style="display:none;margin:0 -16px;width:calc(100% + 32px)">
+      <svg class="timer-ring" viewBox="0 0 28 28">
+        <circle class="bg" cx="14" cy="14" r="12"/>
+        <circle class="fg" id="timer-ring-fg" cx="14" cy="14" r="12"/>
+      </svg>
+      <div>
+        <div class="timer-display" id="timer-display">45:00</div>
+        <div class="timer-label">เวลาที่เหลือ</div>
+      </div>
+    </div>
     <div class="quiz-top">
       <div><span class="q-num" id="q-num">ข้อที่ 1</span> <span class="q-total">/ 30</span></div>
       <div style="display:flex;gap:7px">
@@ -391,13 +436,58 @@ const Q=[
 ];
 
 let S={subject:'',school:'',testType:'',order:[],answers:{},curIdx:0,lastScore:0};
+
+// ─── OFFLINE QUEUE ────────────────────────
+// บันทึกคะแนนไว้ใน localStorage ก่อนเสมอ แล้วค่อย sync ขึ้น Sheets
+const QUEUE_KEY='quiz_pending_results';
+
+function queueSave(payload){
+  try{
+    const q=JSON.parse(localStorage.getItem(QUEUE_KEY)||'[]');
+    // ถ้ามีรายการซ้ำ (subject+school+testType) ให้แทนที่
+    const idx=q.findIndex(x=>x.subject===payload.subject&&x.school===payload.school&&x.testType===payload.testType);
+    if(idx>=0)q[idx]=payload; else q.push(payload);
+    localStorage.setItem(QUEUE_KEY,JSON.stringify(q));
+  }catch(e){}
+}
+
+function flushQueue(){
+  let q=[];
+  try{q=JSON.parse(localStorage.getItem(QUEUE_KEY)||'[]');}catch(e){}
+  if(!q.length)return;
+  q.forEach((payload,i)=>{
+    saveRecord(payload,ok=>{
+      if(ok&&ok.ok){
+        try{
+          let cur=JSON.parse(localStorage.getItem(QUEUE_KEY)||'[]');
+          cur=cur.filter(x=>!(x.subject===payload.subject&&x.school===payload.school&&x.testType===payload.testType));
+          localStorage.setItem(QUEUE_KEY,JSON.stringify(cur));
+        }catch(e){}
+      }
+    });
+  });
+}
+
+function getPendingCount(){
+  try{return JSON.parse(localStorage.getItem(QUEUE_KEY)||'[]').length;}catch(e){return 0;}
+}
+
+// Sync ทุกครั้งที่โหลดหน้า และเมื่อ online
+window.addEventListener('online',flushQueue);
+setTimeout(flushQueue,2000);
 const $=id=>document.getElementById(id);
 
 function showScreen(id){document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));$(id).classList.add('active');window.scrollTo({top:0,behavior:'smooth'})}
 function switchTab(t){document.querySelectorAll('.tab-btn').forEach((b,i)=>b.classList.toggle('active',(i===0&&t==='test')||(i===1&&t==='view')));$('tab-test').style.display=t==='test'?'block':'none';$('tab-view').style.display=t==='view'?'block':'none'}
 function shuffle(arr){let a=[...arr];for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}return a}
 function getSection(pos){for(const s of SECTIONS)if(pos>=s.range[0]&&pos<=s.range[1])return s.label;return ''}
-function fetchRecord(s,sc,cb){fetch(SHEET_URL+'?action=get&subject='+encodeURIComponent(s)+'&school='+encodeURIComponent(sc)).then(r=>r.json()).then(cb).catch(()=>cb(null))}
+function fetchRecord(s,sc,cb){
+  const url=SHEET_URL+'?action=get&subject='+encodeURIComponent(s)+'&school='+encodeURIComponent(sc);
+  fetch(url,{mode:'cors'})
+    .then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);return r.json()})
+    .then(cb)
+    .catch(()=>cb(null));
+}
 function saveRecord(p,cb){fetch(SHEET_URL,{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify(p)}).then(r=>r.json()).then(cb).catch(()=>cb(null))}
 
 function lookupRecord(){
@@ -406,15 +496,108 @@ function lookupRecord(){
   S.subject=sub;S.school=sch;
   const btn=document.querySelector('#lookup-area .btn');
   btn.disabled=true;btn.innerHTML='<div class="spinner"></div> กำลังค้นหา...';
-  fetchRecord(sub,sch,data=>{
-    btn.disabled=false;btn.innerHTML='<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>ค้นหาข้อมูล';
-    $('test-type-area').style.display='block';$('lookup-area').style.display='none';
+
+  function showTestArea(data){
+    btn.disabled=false;
+    btn.innerHTML='<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>ค้นหาข้อมูล';
+    $('test-type-area').style.display='block';
+    $('lookup-area').style.display='none';
     const preDone=data&&data.pre_score!==undefined&&data.pre_score!=='';
     const postDone=data&&data.post_score!==undefined&&data.post_score!=='';
-    if(preDone){$('alert-pre').style.display='flex';$('alert-pre-text').textContent='สอบก่อนรับการนิเทศแล้ว — ได้ '+data.pre_score+' / 30 คะแนน';$('btn-pre').disabled=true}
-    if(postDone){$('alert-post-done').style.display='flex';$('alert-post-text').textContent='สอบหลังรับการนิเทศแล้ว — ได้ '+data.post_score+' / 30 คะแนน';$('btn-post').disabled=true}
-    if(!preDone){$('alert-post-locked').style.display='flex';$('btn-post').disabled=true}
-  })
+    if(preDone){
+      $('alert-pre').style.display='flex';
+      $('alert-pre-text').textContent='สอบก่อนรับการนิเทศแล้ว — ได้ '+data.pre_score+' / 30 คะแนน';
+      $('btn-pre').disabled=true;
+    }
+    if(postDone){
+      $('alert-post-done').style.display='flex';
+      $('alert-post-text').textContent='สอบหลังรับการนิเทศแล้ว — ได้ '+data.post_score+' / 30 คะแนน';
+      $('btn-post').disabled=true;
+    }
+    if(!preDone){
+      $('alert-post-locked').style.display='flex';
+      $('btn-post').disabled=true;
+    }
+  }
+
+  // Timeout 8 วินาที — ถ้า Google Sheets ไม่ตอบก็ยังสอบได้
+  const timer=setTimeout(()=>showTestArea(null), 8000);
+  fetchRecord(sub,sch,data=>{
+    clearTimeout(timer);
+    showTestArea(data);
+  });
+}
+
+// ─── TIMER ───────────────────────────────
+const QUIZ_SECONDS = 45 * 60; // 45 นาที
+let timerInterval = null;
+let timerLeft = QUIZ_SECONDS;
+
+function startTimer(){
+  timerLeft = QUIZ_SECONDS;
+  const bar = $('timer-bar');
+  bar.style.display = 'flex';
+  bar.className = 'timer-bar';
+  updateTimerDisplay();
+  clearInterval(timerInterval);
+  timerInterval = setInterval(()=>{
+    timerLeft--;
+    updateTimerDisplay();
+    if(timerLeft <= 0){
+      clearInterval(timerInterval);
+      timeUp();
+    }
+  }, 1000);
+}
+
+function stopTimer(){
+  clearInterval(timerInterval);
+  timerInterval = null;
+  const bar = $('timer-bar');
+  if(bar) bar.style.display = 'none';
+}
+
+function updateTimerDisplay(){
+  const m = Math.floor(timerLeft / 60);
+  const s = timerLeft % 60;
+  const txt = String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+  $('timer-display').textContent = txt;
+
+  // Ring progress
+  const pct = timerLeft / QUIZ_SECONDS;
+  const circ = 75.4; // 2π × r(12)
+  $('timer-ring-fg').style.strokeDashoffset = circ * (1 - pct);
+
+  // Color states
+  const bar = $('timer-bar');
+  if(timerLeft <= 300){       // 5 นาทีสุดท้าย
+    bar.className = 'timer-bar danger';
+  } else if(timerLeft <= 600){ // 10 นาทีสุดท้าย
+    bar.className = 'timer-bar warn';
+  } else {
+    bar.className = 'timer-bar';
+  }
+}
+
+function timeUp(){
+  // ส่งคำตอบอัตโนมัติเมื่อหมดเวลา
+  let score=0;
+  S.order.forEach((qIdx,pos)=>{if(S.answers[pos]===Q[qIdx].a)score++;});
+  S.lastScore = score;
+  const payload={action:'save',subject:S.subject,school:S.school,testType:S.testType,score,timestamp:new Date().toISOString()};
+  queueSave(payload);
+  saveRecord(payload,ok=>{
+    if(ok&&ok.ok){
+      try{
+        let q=JSON.parse(localStorage.getItem(QUEUE_KEY)||'[]');
+        q=q.filter(x=>!(x.subject===payload.subject&&x.school===payload.school&&x.testType===payload.testType));
+        localStorage.setItem(QUEUE_KEY,JSON.stringify(q));
+      }catch(e){}
+    }
+  });
+  stopTimer();
+  alert('หมดเวลา! ระบบส่งคำตอบให้อัตโนมัติ');
+  showResult(score);
 }
 
 function startTest(type){
@@ -422,7 +605,9 @@ function startTest(type){
   $('quiz-type-badge').textContent=type==='pre'?'ก่อนนิเทศ':'หลังนิเทศ';
   $('quiz-type-badge').className='badge '+(type==='pre'?'badge-gold':'badge-teal');
   $('quiz-name-badge').textContent=S.subject;
-  showScreen('screen-quiz');renderQ()
+  showScreen('screen-quiz');
+  startTimer();
+  renderQ();
 }
 
 function renderQ(){
@@ -450,20 +635,45 @@ function submitTest(){
   if(ans<30&&!confirm('ยังตอบไม่ครบ ('+ans+'/30)\nต้องการส่งคำตอบหรือไม่?'))return;
   let score=0;S.order.forEach((qIdx,pos)=>{if(S.answers[pos]===Q[qIdx].a)score++});S.lastScore=score;
   const btn=$('btn-submit');btn.disabled=true;btn.innerHTML='<div class="spinner"></div> กำลังบันทึก...';
-  saveRecord({action:'save',subject:S.subject,school:S.school,testType:S.testType,score,timestamp:new Date().toISOString()},()=>showResult(score))
+
+  const payload={action:'save',subject:S.subject,school:S.school,testType:S.testType,score,timestamp:new Date().toISOString()};
+
+  // 1) บันทึกใน localStorage ก่อนเสมอ (กันข้อมูลหาย)
+  queueSave(payload);
+
+  // 2) แสดงผลทันที ไม่รอ Sheets
+  showResult(score);
+
+  // 3) ลอง sync ขึ้น Sheets ในพื้นหลัง
+  saveRecord(payload,ok=>{
+    if(ok&&ok.ok){
+      // สำเร็จ — ลบออกจาก queue
+      try{
+        let q=JSON.parse(localStorage.getItem(QUEUE_KEY)||'[]');
+        q=q.filter(x=>!(x.subject===payload.subject&&x.school===payload.school&&x.testType===payload.testType));
+        localStorage.setItem(QUEUE_KEY,JSON.stringify(q));
+      }catch(e){}
+    }
+    // ล้มเหลว — ยังอยู่ใน queue รอ sync ครั้งหน้า
+  });
 }
 
 function showResult(score){
+  stopTimer();
   showScreen('screen-result');
   const pct=Math.round(score/30*100);
   const level=pct>=80?'สมรรถนะสูง':pct>=60?'สมรรถนะปานกลาง':'ต้องพัฒนาเพิ่มเติม';
   const icon=pct>=80?'🏆':pct>=60?'📘':'📌';
+  const pendingNote=getPendingCount()>0
+    ?'<div style="margin-top:10px;font-size:11px;color:rgba(255,200,60,.8);display:flex;align-items:center;gap:5px"><svg width=12 height=12 viewBox=\"0 0 24 24\" fill=none stroke=\"currentColor\" stroke-width=2><path d=\"M12 2a10 10 0 1 0 0 20A10 10 0 0 0 12 2z\"/><line x1=12 y1=8 x2=12 y2=12/><line x1=12 y1=16 x2=12.01 y2=16/></svg>บันทึกไว้ในเครื่องแล้ว รอ sync เมื่อออนไลน์</div>'
+    :'<div style=\"margin-top:10px;font-size:11px;color:rgba(100,220,150,.8);display:flex;align-items:center;gap:5px\"><svg width=12 height=12 viewBox=\"0 0 24 24\" fill=none stroke=\"currentColor\" stroke-width=2><path d=\"M22 11.08V12a10 10 0 1 1-5.93-9.14\"/><polyline points=\"22 4 12 14.01 9 11.01\"/></svg>บันทึกลง Google Sheets เรียบร้อย</div>';
   $('result-content').innerHTML=`<div class="result-hero">
     <div class="result-label">${S.testType==='pre'?'ผลการสอบก่อนรับการนิเทศ':'ผลการสอบหลังรับการนิเทศ'}</div>
     <div class="score-display">${score}<span>/30</span></div>
     <div class="score-pct">${pct}%</div>
     <div class="result-badge">${icon}&nbsp;${level}</div>
     <div style="margin-top:12px;font-size:12px;color:rgba(255,255,255,.4)">${S.subject} &nbsp;·&nbsp; ${S.school}</div>
+    ${pendingNote}
   </div>`;
   if(S.testType==='post'){
     fetchRecord(S.subject,S.school,data=>{
@@ -516,6 +726,7 @@ function viewScores(){
 }
 
 function goHome(){
+  stopTimer();
   showScreen('screen-home');
   $('test-type-area').style.display='none';$('lookup-area').style.display='block';
   ['alert-pre','alert-post-locked','alert-post-done'].forEach(id=>$(id).style.display='none');
