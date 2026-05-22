@@ -662,30 +662,38 @@ function prevQ(){if(S.curIdx>0){S.curIdx--;renderQ()}}
 function submitTest(){
   const ans=Object.keys(S.answers).length;
   if(ans<30&&!confirm('ยังตอบไม่ครบ ('+ans+'/30)\nต้องการส่งคำตอบหรือไม่?'))return;
-  let score=0;S.order.forEach((qIdx,pos)=>{if(S.answers[pos]===Q[qIdx].a)score++});S.lastScore=score;
-  const btn=$('btn-submit');btn.disabled=true;btn.innerHTML='<div class="spinner"></div> กำลังบันทึก...';
+  let score=0;
+  S.order.forEach((qIdx,pos)=>{if(S.answers[pos]===Q[qIdx].a)score++;});
+  S.lastScore=score;
 
-  const payload={action:'save',subject:S.subject,school:S.school,testType:S.testType,score,timestamp:new Date().toISOString()};
+  const payload={action:'save',subject:S.subject,school:S.school,
+                 testType:S.testType,score:score,timestamp:new Date().toISOString()};
 
-  // 1) บันทึกใน localStorage ก่อนเสมอ (กันข้อมูลหาย)
+  // บันทึกใน localStorage ทันที — ไม่รอ network
   queueSave(payload);
 
-  // 2) แสดงผลทันที ไม่รอ Sheets
+  // แสดงผลทันทีเลย
   showResult(score);
 
-  // 3) ลอง sync ขึ้น Sheets ในพื้นหลัง
-  saveRecord(payload,ok=>{
-    if(ok&&ok.ok){
-      // สำเร็จ — ลบออกจาก queue
+  // ส่งขึ้น Sheets ในพื้นหลัง (ไม่รอผล)
+  setTimeout(()=>{
+    fetch(SHEET_URL,{
+      method:'POST',
+      mode:'no-cors',
+      headers:{'Content-Type':'text/plain'},
+      body:JSON.stringify(payload)
+    })
+    .then(()=>{
       try{
         let q=JSON.parse(localStorage.getItem(QUEUE_KEY)||'[]');
         q=q.filter(x=>!(x.subject===payload.subject&&x.school===payload.school&&x.testType===payload.testType));
         localStorage.setItem(QUEUE_KEY,JSON.stringify(q));
       }catch(e){}
-    }
-    // ล้มเหลว — ยังอยู่ใน queue รอ sync ครั้งหน้า
-  });
+    })
+    .catch(()=>{});
+  }, 100);
 }
+
 
 function showResult(score){
   stopTimer();
