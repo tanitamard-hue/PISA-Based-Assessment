@@ -705,24 +705,103 @@ function reviewAnswers(){
 }
 function backToResult(){showScreen('screen-result')}
 
+function getLocalScores(sub, sch){
+  // ดึงคะแนนที่บันทึกไว้ใน localStorage
+  try{
+    const q = JSON.parse(localStorage.getItem(QUEUE_KEY)||'[]');
+    const sub_l = sub.toLowerCase().trim();
+    const sch_l = sch.toLowerCase().trim();
+    let pre = null, post = null;
+    q.forEach(x=>{
+      if((x.subject||'').toLowerCase().trim()===sub_l && (x.school||'').toLowerCase().trim()===sch_l){
+        if(x.testType==='pre') pre = x.score;
+        if(x.testType==='post') post = x.score;
+      }
+    });
+    return {pre, post};
+  }catch(e){ return {pre:null, post:null}; }
+}
+
+function renderScoreCard(sub, sch, pre, post, source){
+  function pctBadge(s){
+    const p=Math.round(s/30*100);
+    const bc=p>=80?'badge-teal':p>=60?'badge-gold':'badge-red';
+    return `<strong>${s}/30</strong>&nbsp;<span class="badge ${bc}">${p}%</span>`;
+  }
+  const sourceNote = source==='local'
+    ? `<div style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--gold);margin-top:10px">
+        <svg width=13 height=13 viewBox="0 0 24 24" fill=none stroke=currentColor stroke-width=2><path d="M12 2a10 10 0 1 0 0 20A10 10 0 0 0 12 2z"/><line x1=12 y1=8 x2=12 y2=12/><line x1=12 y1=16 x2=12.01 y2=16/></svg>
+        ข้อมูลจากเครื่องนี้ (ยังรอ sync ขึ้น Google Sheets)
+      </div>`
+    : `<div style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--teal);margin-top:10px">
+        <svg width=13 height=13 viewBox="0 0 24 24" fill=none stroke=currentColor stroke-width=2><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+        ข้อมูลล่าสุดจาก Google Sheets
+      </div>`;
+
+  let html = `<div class="card">
+    <div class="card-head">
+      <div class="card-icon teal"><svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></div>
+      <div><div class="card-title">${sub}</div><div class="card-desc">${sch}</div></div>
+    </div>
+    <div class="card-body">
+      <div class="score-row">
+        <span class="score-row-label pre">ก่อนรับการนิเทศ</span>
+        <span class="score-row-val">${pre!==null?pctBadge(pre):'<span class="badge badge-gray">ยังไม่ได้สอบ</span>'}</span>
+      </div>
+      <div class="score-row">
+        <span class="score-row-label post">หลังรับการนิเทศ</span>
+        <span class="score-row-val">${post!==null?pctBadge(post):'<span class="badge badge-gray">ยังไม่ได้สอบ</span>'}</span>
+      </div>`;
+
+  if(pre!==null && post!==null){
+    const diff=post-pre;
+    const sign=diff>0?'+':'';
+    const col=diff>0?'var(--teal)':diff<0?'var(--red)':'var(--ink2)';
+    const arrow=diff>0?'▲':diff<0?'▼':'–';
+    html+=`<div class="divider"></div>
+      <div style="text-align:center;padding:6px 0">
+        <div style="font-size:12px;color:var(--ink3);margin-bottom:6px">คะแนนพัฒนาการ</div>
+        <div style="font-size:32px;font-weight:700;color:${col}">${arrow} ${sign}${diff} คะแนน</div>
+      </div>`;
+  }
+  html += sourceNote + '</div></div>';
+  return html;
+}
+
 function viewScores(){
-  const sub=$('view-subject').value.trim(),sch=$('view-school').value.trim();
+  const sub=$('view-subject').value.trim(), sch=$('view-school').value.trim();
   if(!sub||!sch){alert('กรุณากรอกข้อมูล');return}
   $('view-content').innerHTML='<div class="loading"><div class="spinner"></div> กำลังโหลดข้อมูล...</div>';
   showScreen('screen-view');
-  fetchRecord(sub,sch,data=>{
-    const pre=(data&&data.pre_score!==undefined&&data.pre_score!=='')?parseInt(data.pre_score):null;
-    const post=(data&&data.post_score!==undefined&&data.post_score!=='')?parseInt(data.post_score):null;
-    if(pre===null&&post===null){
-      $('view-content').innerHTML=`<div class="card"><div class="card-body"><div class="empty"><div class="empty-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M8 15s1.5-2 4-2 4 2 4 2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg></div><div class="empty-title">ไม่พบข้อมูล</div><div class="empty-sub">${sub} · ${sch}<br>ยังไม่มีประวัติการสอบ</div></div></div></div>`;return
+
+  // 1) แสดงคะแนนจาก localStorage ก่อนเลย (ไม่ต้องรอ Sheets)
+  const local = getLocalScores(sub, sch);
+  if(local.pre!==null || local.post!==null){
+    $('view-content').innerHTML = renderScoreCard(sub, sch, local.pre, local.post, 'local');
+  }
+
+  // 2) ดึงจาก Sheets ในพื้นหลัง — ถ้าได้ข้อมูลใหม่กว่า ค่อยอัปเดต
+  fetchRecord(sub, sch, data=>{
+    const pre = (data&&data.pre_score!==undefined&&data.pre_score!=='')?parseInt(data.pre_score):null;
+    const post = (data&&data.post_score!==undefined&&data.post_score!=='')?parseInt(data.post_score):null;
+
+    if(pre!==null || post!==null){
+      // Sheets มีข้อมูล — merge กับ local (เอาค่าที่มีไว้ก่อน)
+      const mergedPre  = pre!==null ? pre : local.pre;
+      const mergedPost = post!==null ? post : local.post;
+      $('view-content').innerHTML = renderScoreCard(sub, sch, mergedPre, mergedPost, 'sheets');
+    } else if(local.pre===null && local.post===null){
+      // ไม่มีทั้งสองแห่ง
+      $('view-content').innerHTML=`<div class="card"><div class="card-body">
+        <div class="empty">
+          <div class="empty-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M8 15s1.5-2 4-2 4 2 4 2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg></div>
+          <div class="empty-title">ไม่พบข้อมูล</div>
+          <div class="empty-sub">${sub} · ${sch}<br>ยังไม่มีประวัติการสอบ</div>
+        </div>
+      </div></div>`;
     }
-    const pb=s=>{const p=Math.round(s/30*100),bc=p>=80?'badge-teal':p>=60?'badge-gold':'badge-red';return `<strong>${s}/30</strong>&nbsp;<span class="badge ${bc}">${p}%</span>`};
-    let html=`<div class="card"><div class="card-head"><div class="card-icon teal"><svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></div><div><div class="card-title">${sub}</div><div class="card-desc">${sch}</div></div></div><div class="card-body">
-    <div class="score-row"><span class="score-row-label pre">ก่อนรับการนิเทศ</span><span class="score-row-val">${pre!==null?pb(pre):'<span class="badge badge-gray">ยังไม่ได้สอบ</span>'}</span></div>
-    <div class="score-row"><span class="score-row-label post">หลังรับการนิเทศ</span><span class="score-row-val">${post!==null?pb(post):'<span class="badge badge-gray">ยังไม่ได้สอบ</span>'}</span></div>`;
-    if(pre!==null&&post!==null){const diff=post-pre,sign=diff>0?'+':'',col=diff>0?'var(--teal)':diff<0?'var(--red)':'var(--ink2)',arrow=diff>0?'▲':diff<0?'▼':'–';html+=`<div class="divider"></div><div style="text-align:center;padding:6px 0"><div style="font-size:12px;color:var(--ink3);margin-bottom:6px">คะแนนพัฒนาการ</div><div style="font-size:32px;font-weight:700;color:${col}">${arrow} ${sign}${diff} คะแนน</div></div>`}
-    html+='</div></div>';$('view-content').innerHTML=html
-  })
+    // ถ้า Sheets ไม่ตอบ (data=null) และมี local — ยังแสดง local อยู่ ไม่ต้องทำอะไร
+  });
 }
 
 function goHome(){
